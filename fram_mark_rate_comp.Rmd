@@ -1,0 +1,985 @@
+---
+title: "Coho FRAM Model Validation and Mixed Stock Model Updating"
+author: "A Hagen-Breaux, Carrie Cook-Tabor"
+date: "`r Sys.Date()`"
+editor_options: 
+  chunk_output_type: console
+output: 
+  bookdown::html_document2:
+    fig_caption: yes
+    theme: cerulean
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, results = FALSE, warning = FALSE, message = FALSE, fig.width = 9, fig.height = 9)
+
+library("tidyverse")
+# install.packages("devtools")
+# devtools::install_github("BSchamberger/RDCOMClient")
+# devtools::install_github("FRAMverse/framr")
+
+library(framr)
+library("odbc"); library("DBI")
+library("patchwork")
+library(rstatix)
+library(ggpubr)
+library(broom)
+library(modelr)
+
+dir_proj <- "C:/Data/CoTC/SouthernFund/2019/MarkRateA"
+dir_proj2<-"C:/Data/CoTC/SouthernFund/2019/MarkRateA/Data for MR_R"
+
+mdb<-"C:/data/CoTC/PostseasonRuns/PostDB/PSC_CoTC_PostSeason_CohoFRAMDB_thru2020_021622.mdb"  
+#wacolors::pal_vector("coast", 3) #c("#7BAEA0", "#386276", "#3A4332")
+#wacolors::pal_vector("rainier", 3)
+pal = c("#465177", "#E4C22B", "#965127")
+
+d_fishmap<-read.csv(file.path(dir_proj2,"FishMapJun29_2022.csv"))
+d_uniquefishery<-read.csv(file.path(dir_proj2,"FishMapUnique.csv"))
+d_tSlu<-read.csv(file.path(dir_proj2,"ts_lu.csv"))
+d_fishscalar<-framr::read_coho_fish_sclr(mdb,runs = 34:42) |> 
+    select(RunYear, FisheryID, TimeStep, FisheryFlag, MarkReleaseRate)
+
+#needed to combine T/NT net pairs. Do not combine T/NT troll (different MSF regs)
+Tpair<-c(80,82,87,96,101,109,111,119,121,123,130,132,137,139,141,143,145,153,155,157,159)
+
+```
+
+# Comparison of Fishery Adipose Mark Rates from Post-season Runs to Mark Rates from Sampling
+
+## Introduction
+
+In the nineties, the Washington Department of Fish and Wildlife (WDFW) began to remove the adipose fin of most hatchery Coho and Chinook salmon, a practice referred to as mass-marking. A missing adipose fin became a visual indicator for a hatchery salmon, enabling anglers to distinguish a wild from a hatchery fish. Subsequently, the Department introduced mark-selective fisheries (MSF) as a fisheries management tool. In MSFs, salmon with a missing adipose fin (marked) can be retained, while salmon with an intact fin (unmarked) must be released, thus reducing the impact on wild salmon.
+
+A fishery mark rate is calculated as the number of marked salmon divided by all the salmon (marked + unmarked) in a fishery.
+
+Mark rates are an indirect measure of the Fisheries Regulation and Assessment Model's (FRAM) ability to accurately predict fishery stock composition and stock abundances. If modeled mark rates deviate significantly from observed mark rates, assessments of mortalities on hatchery and wild components of a stock will be incorrect.
+
+A 2011 study conducted by Robert Cope (Cope 2011) found that pre-season FRAM model runs consistently overestimate fishery mark rates, resulting in too few unmarked/wild mortalities. The study speculates on forecasting error as the cause. 
+
+This project uses mark rates from post-season model runs, thus eliminating forecast error as a possible source. Mark rates from post-season FRAM runs, using reconstructed Coho abundances, are either compared to mark rates reported to the Regional Mark Information System (RMIS) for non-selective fisheries or to mark rates of encounters from sampling programs for mark-selective fisheries. 
+
+## Method
+
+For this study, mark rates from 2010- 2018 FRAM were compared to mark rates from fishery sampling programs. Most Coho fisheries along the American West Coast are sampled by fishery technicians (samplers). For many sport fisheries, samplers inspect the landed (retained) catch for the presence of an adipose mark. They also interview anglers about the mark status of released fish, allowing the calculation of a mark rate of Coho encounters (landed plus released). This is important, as the mark rate of the landed catch in mark-selective fisheries is almost 100% by design. For most commercial fisheries, the sampling programs only report the mark status of the landed catch, because the mark-status of released Coho is rarely enumerated on commercial vessels. Therefore, this study only evaluates the landed mark rate in non-selective commercial fisheries. 
+
+Fishery sampling programs along the entire West Coast report adipose mark information to the Regional Mark Information System (RMIS). RMIS houses fishery catch, sampling, and coded-wire-tag (CWT) information. RMIS' "CatchSample" data provides a one-stop-shop for coast-wide mark rate information. For this analysis adipose mark rate information was downloaded from [RMIS](https://www.rmis.org/cgi-bin/queryfrm.mpl?Table=catch_sample&Version=4.1). 
+RMIS adipose mark rates are only reported for landed catches. Mark rates for mark-selective fisheries were provided by data stewards from Washington State's ocean and Puget Sound sampling programs. For mark-selective sport fisheries, these programs collect additional information on the number and mark-status of released salmon that permit the computation of the mark rate of encounters.
+
+FRAM is a computer simulation model developed for fishery management and used to estimate the impacts of Pacific Coast salmon fisheries on Chinook and Coho stocks. FRAM mark rates are model projections using historical stock-/fishery-specific exploitation rates in combination with post-season estimates of fishery mortalities and stock-specific abundances (see [FRAM documentation](https://framverse.github.io/fram_doc/)).
+
+FRAM fishery adipose mark rates were either compared to mark rates that came directly from sampling programs or mark rates from RMIS. Additionally, a comparison between adipose mark rates that came from the sampling programs, the primary data source, with mark rates from RMIS, the secondary data source, was also conducted to assess whether the data manipulations performed to import sampling data into RMIS can result in significant differences.
+
+The entire mark rate analysis was conducted in R Markdown by a program called "fram_mark_rate_comp.Rmd".
+
+```{r table example, include = TRUE, results='asis'}
+# Save table information as a tibble
+dplyr::tibble(`Source 1` = c("FRAM", "FRAM", "RMIS"),
+       `Source 2` = c("RMIS", "Sampling", "Sampling"),
+       Fisheries = c("Non-selective sport and commercial fisheries",
+                     "Mark-selective sport fisheries",
+                     "Non-selective sport and commercial fisheries")
+       ) |> 
+  # Format as a table
+  gt::gt() |> 
+  # Make column headers bold
+  gt::cols_label(.list = list(`Source 1` = gt::md("**Source 1**"), 
+                              `Source 2` = gt::md("**Source 2**"),
+                              Fisheries = gt::md("**Fisheries**"))) |> 
+  # Add title text
+  gt::tab_header(title = "Table 1. Sources for mark rate comparisons by fishery type")
+```
+
+
+### General Data Manipulations
+For compatibility purposes, all three data sources underwent the following data manipulations:
+
+**Limit Data to Run Years 2010 to 2018**
+The data analysis was limited to run years 2010 to 2018. Post-season FRAM data prior to 2010 has not been extensively verified and contains known errors. The limitation to 2018 was due to incomplete data reporting post 2018 at the beginning of this project. 
+
+**Sum Over Time Steps**
+In addition to analyzing and displaying data on a time step level, landed catch and encounter data was summed over time steps.  Coho FRAM is stratified into 5 time steps ranging from 1 month to 6 months in duration (see Appedix X).
+
+
+**Combine Treaty/Non-treaty Net Fishery Pairs**
+In FRAM, most net fisheries exists in treaty, non-treaty pairs; i.e., Area 10 treaty and Area 10 non-treaty net. Differentiating a treaty from a non-treaty net fishery is RMIS is often not possible. Additionally, since these fisheries occur in the same geographic area with similar gear, they should experience similar mark rates. Therefore, catch information from treaty/non-treaty fishing pairs was summed for FRAM and sampling analyses. See Appendix x for a list of fishery pairs.
+
+**Wilcoxon signed-rank test**
+The Wilcoxon signed-rank test is a non-parametric hypothesis test. Similar to the Student's t-test, it is a paired difference test. It can be a good alternative to the t-tests when results are not normally distributed. This test was used to compare mark rates from FRAM and sampling (RMIS, sampling programs). P-values smaller than 0.05 were determined to be statistically significant; i.e., FRAM mark rates are significantly different from sampling mark rates. The test was applied to annual mark rates for fisheries with at least 5 years of data. It was run as a "paired" test.
+
+
+### Mark Rates from Sampling
+
+Mark rates from Washington ocean areas 1-4 and Puget Sound fisheries were provided by the data stewards of the Ocean and Puget Sound Sampling Programs in January of 2022. The number of marked landed, unmarked landed, marked releases, and unmarked released were pre-summarized by fishery, year, and month. Release information was only available for sport fisheries. 
+
+Calculation of mark rates from landed catch:
+Equation 1:
+$$
+MarkRate_{Landed} = \frac{Marked_{Landed}}{Marked_{Landed}+Unmarked_{Landed}}
+$$
+Calculation of mark rates from encounters:
+Equation 2:
+$$
+MarkRate_{Encounters} = \frac{Marked_{Landed}+Marked_{Released}}{Marked_{Landed}+Unmarked_{Landed}+Marked_{Released}+Unmarked_{Released}}
+$$
+For each fishery and year combination numbers of Marked_Landed, Unmarked_Landed, Marked_Released and Unmarked_Released were summed over months withing a time step.
+
+Year, fishery, time step strata with mark rates derived from fewer than 20 observations were eliminated.
+
+Mark-selective ocean troll fisheries were removed from the sampling data, because troll fisheries are only sampled for landed catch, resulting in non-informative mark-rates at or near 100% adipose marked.
+
+```{r d_samp}
+d_samp <- read_csv(file.path(dir_proj, "Data for MR_R", "MR Sampling Data.csv")) 
+  # get FishIDs for sport fisheries for later use
+  sampsportID<-unique(d_samp[d_samp$Gear=="Sport",3])|>
+    filter(!is.na(FisheryID))
+    sort(sampsportID$FisheryID)
+  #exclude some non-FRAM areas without FishID
+ d_samp<-d_samp|>
+   filter(
+    !is.na(FisheryID)) |> 
+  select(RunYear = Year, FisheryID, TimeStep = TS, #Flag,
+         MK = `Mrkd Landed`,
+         UK = `UM Landed`,
+         MR = `Mrkd Released`,
+         UR = `UM Released`
+         ) |> 
+  mutate(
+    FisheryID = if_else(FisheryID %in% Tpair, FisheryID+1, FisheryID) 
+    ) |> #count(Flag)
+  group_by(RunYear, FisheryID, TimeStep) |> #, Flag
+  summarise(across(MK:UR, sum), .groups = "drop")  #count(Flag) 
+  # only calculate landed mark rate if sum of marked and unmarked >20
+  # calculate encounter mark rate if sum of all encounters >20
+  d_samp<-d_samp|>
+   mutate(
+    mr_kept = if_else( MK+UK > 19, MK/(MK+UK), NA_real_),
+    mr_enc = if_else( MK+UK+MR+UR > 19, (MK+MR)/(MK+UK+MR+UR), NA_real_)
+  ) |> 
+  rename_at(vars(MK:mr_enc), ~paste0(.,"_samp")) |> 
+  filter(!is.na(mr_enc_samp))|>
+   mutate(
+     Source = "Sampling"
+   )
+   
+#use Encounters for MSF Sport and Landed for NS 
+  d_samp<-left_join(d_samp,d_fishscalar|>
+  select(RunYear,FisheryID,TimeStep,FisheryFlag),
+         by=c("RunYear","FisheryID","TimeStep"))
+  
+   d_samp<-d_samp|>
+    mutate(
+      Type = ifelse(FisheryFlag>2,"Encounters","Landed")
+    )|>
+ mutate(
+   TotalLanded = MK_samp+UK_samp,
+   TotalEncounters = MK_samp+UK_samp+MR_samp+UR_samp,
+   MrkdEncounters = MK_samp + MR_samp
+ )|>
+   mutate(
+     Total_samp = ifelse(Type=="Encounters",TotalEncounters,TotalLanded),
+     Marked_samp = ifelse(Type=="Encounters",MrkdEncounters,MK_samp),
+     MR_sampl = ifelse(Type=="Encounters",mr_enc_samp,mr_kept_samp)
+   )
+ 
+ d_samp<-d_samp[,c(1:3,16:18,10,12)]|>
+   filter(!is.na(MR_sampl))
+ #eliminate MSF troll fisheries Type= Encounters FisheryID = 34,35,38,42. Sampling for these fisheries only records landed catch
+ troll<-c(34,35,38,42)
+ d_samp<-d_samp|>
+   filter(!FisheryID %in% troll )
+  
+ write.csv(d_samp,"d_samp.csv")
+```
+### Mark Rates from RMIS
+
+On May 17, 2022 RMIS "CatchSample" data was queried for Coho data between 2010 and 2020. 
+
+These data were mapped to FRAM fisheries based on information in the "catch_location_code", "fishery", and "gear" fields. Fishery definitions are located in Appendix X. Recoveries with a gear code between 50 and 59 were assigned to escapement.
+
+RMIS fields "period_type" and "period" were utilized to map data to FRAM time steps (see Appendix x).
+
+During quality control procedures records where "number_caught" or "number_sampled" was either "na" or zero were removed. Additionally, records with missing "mark_rates" were eliminated. Designated "M" mixed mark-selective/non-selective fisheries also resulted in discarding the record.
+
+For each record the number marked were calculated as "number_caught" times "mark_rate". 
+
+For each fishery,year, and time step combination the number marked and the number caught were summed.
+
+Year, fishery, time step strata with mark rates derived from fewer than 20 sampling observations were eliminated.
+
+The mark rate was calculated as:
+Equation 3:
+$$
+MarkRate_{Landed} = \frac{Marked_{Landed}}{Marked_{Landed}+Unmarked_{Landed}}
+$$
+
+```{r d_rmisraw}
+
+# data pulled from RMIS CatchSample May 17, 2022 with only a species (Coho) and years (2010 to 2020) filter
+d_rmisraw<-read.csv(file.path(dir_proj2,"RMIS2010_20CohoMrkSample.csv"))
+# fisheries that remained unassigned after the first round were added to 
+# the fishmap file based on best fit, with some exceptions that remained unmapped
+# such as 1M2, 1M3, 1M4, Oregon Net etc.
+
+#Clean and summarize data
+#maps CatchSample data to FRAM fisheries
+d_rmisraw2<-d_rmisraw%>%
+  add_column (FisheryID = 0)
+# add blanks to end of recovery location code
+d_rmisraw2$catch_location_code<-paste(d_rmisraw2$catch_location_code,"    ")
+
+for (i in 1:nrow(d_fishmap)) {
+  numchars<-d_fishmap[i,4]
+  gear<-d_fishmap[i,3]
+  FishID2<-d_fishmap[i,1]
+  FishName2<-d_fishmap[i,2]
+  locc<-substr(d_fishmap[i,5], 1, numchars)
+  i=i+1
+#find all the records in rmis_recrel with matching fishery and location codes
+# update FishID and FishName fields to FishID and FishName
+# assign fishery 50-59 to escapement  
+  if (gear == 5){
+    d_rmisraw2<-within(d_rmisraw2,FisheryID[floor(fishery/10) ==gear ]<-FishID2)
+  } else {
+     d_rmisraw2<-within(d_rmisraw2,FisheryID[floor(fishery/10) ==gear & substr(catch_location_code,start=1,stop=numchars) ==locc]<-FishID2)
+ }  
+}
+#assign unassigned records with a freshwater sampling location to escapement
+d_rmisraw2<- within(d_rmisraw2, FisheryID[FisheryID==0 & substr(catch_location_code,2,2) == "F"]<-300) 
+
+#add Treaty ocean troll designation
+NT_ocean_troll<-c(35,38,42)
+d_rmisraw2$FisheryID = ifelse(d_rmisraw2$fishery ==15 & d_rmisraw2$FisheryID %in% NT_ocean_troll, d_rmisraw2$FisheryID + 1,d_rmisraw2$FisheryID)
+
+
+
+#write.csv(d_rmisraw2,"drmisraw2.csv")
+  
+#add Fishery Name
+d_rmisraw2<-left_join(d_rmisraw2,d_uniquefishery %>% select(FisheryID,FisheryName), by = c("FisheryID"))
+
+
+
+
+
+for (i in 1:nrow(d_rmisraw2)) {
+  if (d_rmisraw2$FisheryID[i] %in% Tpair){
+    d_rmisraw2$FisheryID[i]<- d_rmisraw2$FisheryID[i]+1
+  } else {
+    d_rmisraw2$FisheryID[i]<- d_rmisraw2$FisheryID[i]
+ }  
+}
+ # add time steps
+d_rmis3<-left_join(d_rmisraw2,d_tSlu,by=c('period_type'='PeriodType','period'='Period'))|>
+  #clean data
+#Eliminate records where mark rate is na
+filter(!is.na(mark_rate))|>
+#eliminate records where number caught is na
+filter(!is.na(number_caught))|>
+#eliminate records where number caught is zero
+filter(!number_caught==0) |>
+#eliminate records where number sampled is na
+filter(!is.na(number_sampled))|>
+#eliminate records where number sampled is zero
+filter(!number_sampled==0)|>
+#calculate the number marked
+mutate(number_marked = number_caught * mark_rate) |> 
+#eliminate records where adclip_selective_fishery = M (mixed) 
+filter(!adclip_selective_fishery=="M")
+#sum number marked by fishery, year, and time step
+write.csv(d_rmis3,"d_rmis3.csv")
+
+d_rmis<-d_rmis3 |>
+  group_by(catch_year, FisheryID, TimeStep) |> 
+summarise(across(c(number_sampled,number_caught,number_marked), sum), .groups = "drop")|> 
+  mutate(MR_rmis = number_marked/number_caught)|>
+#eliminate records where number sampled < 20
+filter(!number_sampled<20)
+d_rmis<-d_rmis[,c(1:3,5:7)]|>
+  mutate(Source = "RMIS")|>
+  mutate(Type = "Landed")
+colnames(d_rmis)[1]<- "RunYear"
+colnames(d_rmis)[4]<- "Total_rmis"
+colnames(d_rmis)[5]<- "Marked_rmis"
+colnames(d_rmis)[2]<-"FisheryID"
+
+write.csv(d_rmis, "d_rmis.csv")
+```
+### Mark Rates from FRAM
+
+The Coho Technical Committee annually produces post-season Coho model runs. These runs start with the final pre-season model runs and are subsequently updated with best estimates of stock-specific escapements and post-season assessments of landed and non-landed fisheries mortalities. The most current database is housed on the Pacific Salmon Commission's (PSC) [Extranet website](https://extranet.psc.org/SitePages/Home.aspx). Model runs are updated through 2020 and contained in an Access database called "PSC_CoTC_PostSeason_CohoFRAMDB_thru2020_021622.mdb". 
+
+2010 to 2018 data was extracted from the "Mortality" table using "framr", an r package that processes FRAM output data.
+
+"LandedCatch", "MSFLandedCatch", "MSFNonRetention" data was summarized by year, fishery, time step, and mark status. In FRAM, the "LandedCatch" column contains the landed catch in a non-selective fishery, the "MSFLandedCatch" column contains the landed catch in a mark-selective fishery, and the "MSFNonRetention" column contains the mortality of Coho released due to mark-selective fishing regulations. "MSFNonRetention" mortalities were divided by the release mortality rate to convert mortalities into released encounters. 
+
+Equation 4:
+$$
+Encounters_{MSFNonRetention} = \frac{Mortality_{MSFNonRetention}}{ReleaseMortalityRate}
+$$
+
+Mixed mark-selective/non-selective fisheries were excluded from the data. 
+
+For all fisheries, regardless of whether they were non-selective or mark-selective, the "MSFLandedCatch" in combination with MSFNonRetention were used to compute encounter mark rates. In Coho FRAM the landed catch mark rate is identical to the encounter mark rate.
+
+Equation 5:
+$$
+Encounters_{MSF_Fishery} = MSFLandedCatch + Encounters_{MSFNonRetention}
+$$
+
+The mark rates of the encounters were computed as in equation 2.
+
+```{r d_fram}
+#framr is an r package that processes data in FRAM AcCESSDB
+#data from "PSC_CoTC_PostSeason_CohoFRAMDB_thru2020_021622.mdb"
+
+# d_fram_mort <- framr::read_coho_mort(mdb, runs = 34:44) |>
+#   select(RunID, RunYear, StockID, FisheryID, FisheryName, TimeStep, LandedCatch, MSFLandedCatch, MSFNonRetention)
+# 
+# mdb_con <- DBI::dbConnect(drv = odbc::odbc(), .connection_string = paste0("Driver={Microsoft Access Driver (*.mdb, *.accdb)};DBQ=", mdb, ";"))
+# 
+# d_fram_fs <- tbl(mdb_con, "FisheryScalers") |> filter(RunID %in% 34:42) |> select(RunID:TimeStep, MarkReleaseRate) |> collect()
+# 
+# DBI::dbDisconnect(mdb_con)
+
+
+d_fram <- left_join(
+  framr::read_coho_mort(mdb, runs = 34:44) |> 
+    select(RunYear, StockID, FisheryID, TimeStep, LandedCatch, MSFLandedCatch, MSFNonRetention) |> 
+    mutate(RunYear = as.numeric(RunYear))
+  ,
+  d_fishscalar
+  ,
+  #d_fram_mort, d_fram_fs,
+  by = c("RunYear","FisheryID","TimeStep")
+) |> #filter(FisheryID %in% 96:97) |> count(FisheryID, FisheryName)
+  mutate(
+    MarkStatus = if_else(StockID %% 2 == 0, "M", "UM"),
+    FisheryID = ifelse(FisheryID %in% Tpair, FisheryID+1, FisheryID),
+    Kept = LandedCatch + MSFLandedCatch,
+    Enc = LandedCatch + MSFLandedCatch + if_else(MarkReleaseRate>0,MSFNonRetention/MarkReleaseRate,0)
+  ) 
+#re-flag 1s to 2s.In post-season runs fisheries should all be flagged as 2. This will avaoid potential duplicates for T/NT fishing pairs
+  d_fram[which(d_fram$FisheryFlag == 1),]$FisheryFlag=2
+ 
+   d_fram<-d_fram|>
+  group_by(RunYear, FisheryID,MarkStatus, TimeStep,FisheryFlag)|>
+  summarize(across(Kept:Enc,sum),.groups = "drop")|>
+  pivot_wider(names_from = MarkStatus, values_from = c(Kept,Enc))|>
+  mutate(
+    mr_kept = Kept_M/(Kept_M+Kept_UM),
+    mr_enc = Enc_M/(Enc_M+Enc_UM)
+  ) |>
+  rename_at(vars(Kept_M:mr_enc), ~paste0(.,"_fram")) |> 
+  filter(!is.na(mr_enc_fram))|>
+  filter(!FisheryFlag>8)|> #exclude mixed MSF/NS fisheries
+mutate(Source = "FRAM")
+
+d_fram<-d_fram[,c(1:4,7,8,10,11)]|>
+  mutate(Type = "Encounters",
+         Total = Enc_M_fram + Enc_UM_fram
+         )
+  colnames(d_fram)[5]<-"Marked"
+  colnames(d_fram)[7]<-"MR"
+d_fram<-d_fram[,c(1:4,10,5,7:9)]
+  
+
+write.csv(d_fram, "d_fram.csv")
+```
+
+## Results
+
+
+```{r mr_objects}
+#nothing in sampling dataset that isn't in fram dataset
+setdiff(unique(d_samp$FisheryID), unique(d_fram$FisheryID))
+#but lots of fram fisheries for which we don't have sampling obs...
+sort(setdiff(unique(d_fram$FisheryID), unique(d_samp$FisheryID)))
+
+#join to sampling if MSF, join to RMIS if non-selective
+d_fram_joined1 <- d_fram|>
+  filter(FisheryFlag ==8)|>
+  inner_join(
+    d_samp,
+    by=c("RunYear","FisheryID","TimeStep")
+)
+
+colnames(d_fram_joined1)[10]<-"Total"
+colnames(d_fram_joined1)[11]<-"Marked"
+colnames(d_fram_joined1)[12]<-"MR"
+
+
+d_fram_joined2<-d_fram|>
+  filter(!FisheryFlag==8)|>
+  inner_join(
+    d_rmis,
+    by=c("RunYear","FisheryID","TimeStep")
+)
+colnames(d_fram_joined2)[10]<-"Total"
+colnames(d_fram_joined2)[11]<-"Marked"
+colnames(d_fram_joined2)[12]<-"MR"
+
+mr_fram_samp_rmis <-rbind(d_fram_joined1,d_fram_joined2)
+
+colnames(mr_fram_samp_rmis)[10]<-"Tot_samp"
+colnames(mr_fram_samp_rmis)[11]<-"Marked_samp"
+colnames(mr_fram_samp_rmis)[12]<-"MR_samp"
+
+mr_ts_fram_samp_rmis <-left_join(mr_fram_samp_rmis,d_uniquefishery %>% select(FisheryID,FisheryName), by = c("FisheryID"))
+
+
+#sum over time steps before computing annual rates. It's okay to ignore Flags and Type (based on data QAQC). Conduct analyses on annual mark rates, because many FRAM fisheries are not reported in the time step they actually occur; i.e., PS fw fisheries are modeled in time 5 even if most catch occurs in time 4.
+mr_yr_fram_samp_rmis<-mr_ts_fram_samp_rmis[,c(1:6,10:11,15)]|>
+  group_by(RunYear,FisheryID,FisheryName)|>
+  summarise(across(c(Total,Marked,Tot_samp,Marked_samp), sum),.groups="drop")|>
+  mutate(FRAM_MrkRate = Marked/Total,
+         Samp_MrkRate = Marked_samp/Tot_samp)|>
+  mutate(RelPctDiff = (Samp_MrkRate-FRAM_MrkRate)/Samp_MrkRate,
+         AbsPctDiff = (Samp_MrkRate-FRAM_MrkRate))
+ # rename(FisheryName = FisheryName.x)
+
+write.csv(mr_ts_fram_samp_rmis, "MR_TS.csv")
+#write.csv(mr_yr_fram_samp_rmis, "MR_Yr.csv")
+#d_fram_sport<-d_fram[is.element(d_fram$FisheryID,sampsportID$FishID),]
+
+write.csv(mr_fram_samp_rmis,"mr_fram_samp.csv")
+
+# compare landed RMIS to landed sampling for non-selective fisheries
+       
+# mr_rmis_samp<-left_join(mr_rmis_samp,d_uniquefishery %>% select(FRAM_Fish_ID,FRAM_Fish_Name), by = c("FisheryID"="FRAM_Fish_ID"))
+mr_rmis_samp<-d_samp|>
+  #filter(Type=="Landed")|>
+  inner_join(
+  d_rmis,
+  by=c("RunYear","FisheryID","TimeStep")
+)|>
+  left_join(
+    d_uniquefishery,
+    by=c("FisheryID")
+  )
+#add fishery flag
+mr_rmis_samp<-left_join(mr_rmis_samp, d_fram%>%                          select(RunYear,FisheryID,TimeStep,FisheryFlag),
+                        by=c("RunYear","FisheryID","TimeStep"))
+#eliminate MSF
+mr_rmis_samp<- mr_rmis_samp|>
+  filter(FisheryFlag<=2)
+
+write.csv(mr_rmis_samp, "mr_RMIS_SAMP.csv")
+
+```
+
+
+
+```{r}
+
+mr_fram_samp_long <- left_join(mr_fram_samp_rmis,d_uniquefishery %>% select(FisheryID,FisheryName), by = c("FisheryID"))|>
+  select(RunYear, FisheryID, FisheryName, TimeStep, starts_with("MR")) |> 
+  pivot_longer(names_to = "type", values_to = "val", cols = starts_with("MR"))
+colnames(mr_fram_samp_long)[3]<-"FisheryName"
+mr_fram_samp_long$type[mr_fram_samp_long$type!="MR_samp"]<-"MR_fram"
+
+mr_rmis_samp_long <- mr_rmis_samp |> 
+  select(RunYear, FisheryID, FisheryName, TimeStep, MR_sampl ,MR_rmis) |>
+  pivot_longer(names_to = "type", values_to = "val", cols =  c("MR_sampl","MR_rmis"))
+colnames(mr_rmis_samp_long)[3]<-"FisheryName"
+# mr_rmis_samp_long$type[mr_rmis_samp_long$type!="MR_sampl"]<-"MR_samp"
+```
+
+
+
+
+
+
+```{r}
+# gg_mr_bar_ts <- function(ts) {
+#   filter(mr_fram_samp_long, TimeStep == ts) |> 
+#     ggplot(aes(RunYear, val, color = type, fill = type)) +
+#     geom_col(position = position_dodge()) +
+#     scale_x_continuous("") +
+#     scale_y_continuous("Mark rate", labels = scales::percent) +
+#     scale_color_manual(values = pal, aesthetics = c("color", "fill")) +
+#     facet_wrap(~TimeStep+FisheryID+FisheryName, labeller = label_wrap_gen(multi_line = F), ncol = 3) +
+#     theme(legend.position = "top")
+# }
+# 
+# gg_mr_bar_ts(2) + gg_mr_bar_ts(3)
+# 
+# wrap_plots(map(2:5, gg_mr_bar_ts), ncol = 2)
+```
+
+### Compare Sampling to FRAM
+
+For the first comparison, annual mark rates from sampling or RMIS depending on whether the fishery was mark selective sport or non-selective, respectively were compared to FRAM mark rates. Mark rates from RMIS or sampling programs will be henceforth referred to as sampled or observed mark rates. Incorporating salmon encounter information from mark-selective sampling programs increased the number of comparable year, fishery, time step strata from to 728 to 881 and resulted in the ability to incorporate mark-selective sport fisheries in the analysis.
+
+Tabular results of mark rates for all available fisheries and time steps can be found in Appendix table x.
+
+Initial adipose mark rate comparisons were grouped into 7 geographical regions. Additionally, Puget Sound marine was separated into commercial and sport fisheries
+
+Box plots x and y were created by summing total landed catch or encounters as well as total marked catch or encounters over all time steps withing a year and fishery before computing mark rates. 
+Box plots x display the difference between the sampling mark rate and the FRAM mark rate. The vertical line in the box represents the median difference, the boundaries of the box represent the first quartile (0.25) and the "whiskers" (outer lines) the third quartile (0.75). Outliers are plotted as individual points beyond the whiskers.  
+Bar plot y displays 
+
+#### Figure x. Box plot of 2010-2018 differences between FRAM and observed mark rates
+```{r}
+#produce box plots of absolute % differences
+
+#find duplicates
+# dplyr::group_by(RunYear, FisheryID, FisheryName, TimeStep, type) %>%
+# dplyr::summarise(n = dplyr::n(), .groups = "drop") %>%
+# dplyr::filter(n > 1L) 
+  
+box1<-mr_yr_fram_samp_rmis|> 
+ left_join(d_uniquefishery %>% select(FisheryID,FisheryArea), by = c("FisheryID"))
+
+ ggplot(box1 |> mutate(Label = paste(FisheryArea, "-", FisheryName)),aes(x = FisheryName, y = AbsPctDiff)) +
+    coord_flip() +
+    geom_boxplot(color = "orange", fill = "orange", alpha = 0.5, outlier.shape = NA) +
+    geom_hline(yintercept = 0) +
+    scale_x_discrete("") +
+    scale_y_continuous("Sampling mark rate - FRAM mark rate") +
+    labs(title ="Differences between post-season Coho FRAM modeled mark rates and sampling observations, 2010-18") +
+   theme(axis.text=element_text(size=8), 
+         axis.title= element_text(size=10)) +
+   facet_wrap(~FisheryArea, scales = "free_y", nrow = 2)
+   #plotly::ggplotly(a)
+   # ggsave("box1.png", plot=box1, height=7, width=10)
+ 
+
+```
+
+
+#### Figure y. Bar plot of average 2010 - 2018 mark rates from FRAM and sampling observations
+```{r}
+  #Bar plots of average annual catch by Fishery and Ocean Area
+ bar1<-mr_yr_fram_samp_rmis|>
+   select(RunYear,FisheryID,FisheryName,FRAM_MrkRate,Samp_MrkRate)|>
+   left_join(d_uniquefishery %>% select(FisheryID,FisheryArea), by = c("FisheryID"))|>
+   pivot_longer(names_to = "type", values_to = "val", cols =  c("FRAM_MrkRate","Samp_MrkRate"))|>
+  group_by(FisheryID,FisheryName,FisheryArea,type)|>
+  summarise(across(val, mean),.groups="drop")
+ 
+ ggplot(bar1, aes(FisheryName, val, color = type, fill = type)) +
+    coord_flip() +
+    geom_col(position = position_dodge(), show.legend = T) +
+    scale_color_manual(values = pal, aesthetics = c("color", "fill")) +
+    facet_wrap(~FisheryArea, labeller = label_wrap_gen(multi_line = F), scales = "free_y", nrow = 2) +
+    #labs(subtitle = d$FisheryName[1]) +
+    theme(legend.position = "top",
+          legend.text = element_text(size=8),
+          legend.key.size = unit(0.4, 'cm'),
+          legend.title=element_blank(),
+          axis.text=element_text(size=6),
+          axis.text.x = element_text(angle = 75),
+          strip.text.x = element_text(size = 10))+
+    ggtitle("2010-18 average fishery mark rates from FRAM and sampling observations")+
+    xlab("Fishery")+
+    ylab("Mark Rate")
+ 
+```
+
+#### Wilcoxon analysis of mark rate differences between FRAM and sampling
+
+```{r results='asis'}
+# test whether mark rate differences are statistically significant for each fishery; use annual mark rates for comparisons
+FisheryWilcoxTest<-mr_yr_fram_samp_rmis|>
+  select(RunYear, FisheryID, FisheryName, FRAM_MrkRate ,Samp_MrkRate) |>
+  # pivot_longer(names_to = "type", values_to = "val", cols =  c("FRAM_MrkRate","Samp_MrkRate"))|>
+  group_by(FisheryID)|>
+  filter(FisheryID %in% (mr_yr_fram_samp_rmis|>
+  select(RunYear, FisheryID) |> group_by(FisheryID) %>% summarize(n = n()) |> filter(n >= 5))$FisheryID) %>%
+  # do(tidy(t.test(.$FRAM_MrkRate, 
+  #                .$Samp_MrkRate, 
+  #                mu=0,alt = "two.sided",
+  #                paired = True)))
+ do(tidy(wilcox.test(.$FRAM_MrkRate, 
+                 .$Samp_MrkRate)))
+                 
+# graph fishery in order of wilcox significance
+WilcoxGraph<-FisheryWilcoxTest |> 
+  left_join(mr_yr_fram_samp_rmis |> select(FisheryID, FisheryName), "FisheryID") |>
+  mutate(Significant = if_else(p.value > 0.05, "Non-significant", "Significant")) |>
+  distinct()
+  
+ ggplot(WilcoxGraph, aes(x = reorder(FisheryName, -p.value), y = p.value, fill = Significant, color = Significant)) +
+  geom_col() +
+  geom_hline(yintercept = 0.05, linetype = "dotted") +
+  theme_bw() +
+  labs(title ="Wilcoxon p-values by fishery", subtitle= "Fisheries with significant mark rate differences in turquoise") +
+   xlab("Fisheries")+
+   ylab("p-value")+
+  coord_flip() 
+# summarize Wilcox significance by region
+WilcoxTable1<-left_join(WilcoxGraph,
+                         d_uniquefishery %>% select(FisheryID,FisheryArea), by = c("FisheryID"))|>
+    select(FisheryID,FisheryArea,Significant)|>
+    group_by(FisheryArea)|>
+    summarise(n=n(),.groups= "drop")
+  
+WilcoxTable2<-left_join(WilcoxGraph,
+                         d_uniquefishery %>% select(FisheryID,FisheryArea), by = c("FisheryID"))|>
+    select(FisheryID,FisheryArea,Significant)|>
+    group_by(FisheryArea,Significant)|>
+    summarise(n=n(),.groups= "drop")|>
+    group_by(FisheryArea)|>
+    mutate(Fisheries = sum(n))|>
+    mutate(`#Significant`=Fisheries - n)|>
+    ungroup()|>
+    filter(Significant !="Significant")|>
+    rename(`#Fisheries` = Fisheries)
+
+    WilcoxTable2<-WilcoxTable2[,c(1,4,5)] |>
+     
+  # Format as a table
+  gt::gt() |> 
+  # Add title text
+  gt::tab_header(title = "Table 2. Number of fisheries evaluated with Wilcoxon and number of fisheries with siginificant mark rate differences in each area")
+  
+    WilcoxTable2
+
+    
+```
+<br>
+**Alaska** <br>
+Sampling and RMIS mark rates are low and within a few percentage points of each other. FRAM mark rate are higher than sampling mark rates for all fisheries in this region. Differences are statistically significant for all but Southwest Alaska troll.
+
+**Canada** <br>
+Mark rates in Canadian fisheries can vary widely with very low mark rates in Northern and Central British Columbia and mark rates around 50% for the West Coast of Vancouver Island. FRAM mark rates can be higher as well as lower for individual fisheries within this area. FRAM and sampling mark rates are within a similar order of magnitude, except for Johnstone Strait net. Mark rate differences for this fishery are large between FRAM (32.6%) and sampling (6.8%), but due to low sample size statistical significance cannot be evaluated. An evaluation of significance is also confounded by small sample sizes for four other British Columbia fisheries. Only North British Columbia troll, North-central net, and North-central troll had enough data points to evaluate significance. Differences for these fisheries were non-significant.
+
+**Washington Coastal** <br>
+FRAM mark rates can be higher as well as lower for individual fisheries within this area. The Washington Coastal fishery aggregate contains 8 individual fisheries. 4 of the fishery had enough data points to test statistical significance. Of these, Quillayute and Grays Harbor net exhibited significant mark rate differences.
+
+**Washington Ocean** <br>
+For all 6 ocean fisheries FRAM mark rates were higher than observed mark rates, with 4 of these fisheries evaluating as significantly different, and 1 fishery being excluded from the analysis of significance. Only the Area 1 sport fishery tested "non-significant". Mark rate differences are larger in northern areas (ocean areas 3 and 4) than in southern areas (ocean areas 1 and 2). 3 of the 4 fisheries with significant mark-rate differences were well-sampled mark-selective sport fisheries. These findings confirm earlier analysis by Robert Cope (Cope 2011) and warrant further evaluations. 
+
+**Puget Sound Commercial** <br>
+Puget Sound fisheries generally have high mark rates, because many Puget Sound stocks are dominated by mass-marked hatchery fish. Notable exceptions are Stillaguamish, Skagit, and Snohomish Coho. 
+FRAM mark rates can be higher as well as lower for individual fisheries within this area. Of the 20 fisheries in this aggregate, 16 contained a sufficient number of data points to be evaluated using the Wilcoxon test. Of these, 7 fisheries had mark rates that differed significantly between FRAM and sampling. Differences were particularly pronounced for Areas 12/12B net, 10E net, and 6/7/7A net. 
+
+**Puget Sound Freshwater** <br>
+FRAM mark rates can be higher as well as lower for individual fisheries within this area. Of the 13 fisheries in this aggregate, only 5 contained a sufficient number of data points to be evaluated using the Wilcoxon test. Of these, 2 fisheries, Skokomish River net and Nisqually River net had mark rates that differed significantly between FRAM and sampling. Differences were particularly pronounced for Skokomish River net. This fishery also had a large variance of the mark rate estimates.
+ 
+**Puget Sound Sport** <br>
+FRAM mark rates can be higher as well as lower for individual fisheries within this area. All 10 fisheries in this aggregate had sufficient number of data points to be evaluated using the Wilcoxon test. Of these, 6 fisheries had mark rates that differed significantly between FRAM and sampling.
+
+**South of Falcon (SoF)** <br>
+South of Falcon encompasses ocean areas between Cape Falcon (Oregon) and the California/Mexico border.
+All 5 SoF fisheries had higher FRAM mark rates. 3 fisheries in this aggregate had sufficient number of data points to be evaluated using the Wilcoxon test. Of these, 1 fishery, Newport sport had a mark rate that differed significantly between FRAM and sampling.
+
+
+
+Categorize into low/med/high concurrence based on standard deviation?
+MSE analysis
+Focus on 3 fisheries in each category
+check into time step variations
+list possible causes of variation (under-over estimate naturals?)
+
+#### Root mean squared mark rate difference
+Calculates the squared difference between FRAM and observed mark rates by fishery. Then calculates the mean for fisheries within "FisheryArea". Finally calculates the square root for each "FisheryArea".
+
+```{r results = `asis`}
+
+MR_RMSE<-bar1|>
+pivot_wider(names_from = type, values_from = val)|>
+   mutate(MR_Diff = FRAM_MrkRate-Samp_MrkRate)|>
+   mutate(SQ_Diff = MR_Diff^2)
+ #write.csv(MR_RMSE,"MR_RMSE.csv")
+ MR_RMSE<-MR_RMSE|>  
+ group_by(FisheryArea)|>
+   summarise(across(SQ_Diff,mean),.groups="drop")|>
+   mutate(Root_SQ_Diff = sqrt(SQ_Diff))
+  #rounds to 2 decimals
+    numeric_columns<-sapply(MR_RMSE,mode) =='numeric'
+    MR_RMSE[numeric_columns]<-round(MR_RMSE[numeric_columns],2)
+    
+  MR_RMSE<-MR_RMSE|>
+  gt::gt() |> 
+   # Make column headers bold
+    gt::cols_label(.list = list(FisheryArea = gt::md("**Area**"), 
+                               SQ_Diff = gt::md("**AvgSqDiff**"),
+                              Root_SQ_Diff = gt::md("**RootAvgSqDiff**"))) |> 
+   # Add title text
+   gt::tab_header(title = "Table 3. Root mean square mark rate difference by fishery area")
+   
+   MR_RMSE
+``` 
+ 
+ #### Annual Mark Rates by Fishery
+ 
+```{r}
+
+
+
+ 
+ # Bar plots of annual mark rates by fishery FRAM/Sampling
+ 
+ #exclude_fish=c(18,20,21,44,54,63,74,77,84,98,108,113,117,128,131,138,162,166,172,174,179,181,182,187,194,195,196,197)
+bar2<-mr_yr_fram_samp_rmis|> 
+ left_join(d_uniquefishery %>% select(FisheryID,FisheryArea), by = c("FisheryID"))|>
+  pivot_longer(names_to = "type", values_to = "val", cols =  c("FRAM_MrkRate","Samp_MrkRate"))
+
+ # filter(!FisheryID %in% exclude_fish)
+# gg_mr_bar_fishery <- function(fid) {
+#   d <- filter(mr_fram_samp_meants, FisheryID == fid)
+  
+    ggplot(bar2, aes(RunYear, val, color = type, fill = type)) +
+    geom_col(position = position_dodge(), show.legend = T) +
+   #scale_x_continuous("") +
+    #scale_y_continuous("Mark rate", labels = scales::percent) +
+    scale_color_manual(values = pal, aesthetics = c("color", "fill")) +
+    facet_wrap(~FisheryID+FisheryName, labeller = label_wrap_gen(multi_line = F), nrow = 7) +
+    #labs(subtitle = d$FisheryName[1]) +
+    theme(legend.position = "top",
+          legend.text = element_text(size=8),
+          legend.key.size = unit(0.4, 'cm'),
+          legend.title=element_blank(),
+          axis.text=element_text(size=6),
+          axis.text.x = element_text(angle = 75),
+          strip.text.x = element_text(size = 10))+
+    ggtitle("2010-18 Fishery mark rates from FRAM and sampling")+
+    xlab("Year")+
+    ylab("Mark Rate")
+# }
+#Overview side-by-side bars
+#sum over time steps and years. Group into fishery aggregates from same #region with similar FRAM/Sampling relationships
+
+selectfish = c(17,33,37,40,41,39,43,44,47,50,71,81,83,88,91,92,93,97,118,120,122,129,136,138,142,152,154,171,172,174,178,179,181,194,195,196,197,198)    
+
+mr_fram_samp_aggs<-mr_fram_samp_long|>
+  group_by(FisheryID,FisheryName,type)|>
+    summarize(val=mean(val))|>
+  filter(FisheryID %in% selectfish)|>
+  mutate(
+     Area = case_when(FisheryID==17~ "SoF",
+                      FisheryID==33|FisheryID==37 ~ "A1,2Spt",
+                      FisheryID==40|FisheryID==41 ~ "A3,4Spt",
+                      FisheryID==39|FisheryID==43|FisheryID==44 ~ "T_OcnTrl",
+                      FisheryID==47|FisheryID==50|FisheryID==71 ~ "CoastNet",
+                      FisheryID==81 ~ "JDF_Net",
+                      FisheryID==88 ~ "7,7A_Net",
+                      FisheryID==91|FisheryID==92|FisheryID==93 ~ "JDF&SJI_Spt",
+                      FisheryID==97 ~ "B_ham_Net",
+                      FisheryID==118|FisheryID==120|FisheryID==122|FisheryID==129 ~ "CntrPS_Net",
+                      FisheryID==136|FisheryID==138|FisheryID==142 ~ "SPS_Net",
+                      FisheryID==152 ~ "HC_Spt",
+                      FisheryID==154 ~ "12,12B_Net",
+                      FisheryID==171|FisheryID==172|FisheryID==178|FisheryID==179 ~ "NCBC_Net",
+                      FisheryID==174|FisheryID==181 ~ "WCVI_Net",
+                      FisheryID==194|FisheryID==195|FisheryID==196|FisheryID==197|FisheryID==198 ~ "Alaska"
+                      )
+     )
+  mr_fram_samp_aggs<-mr_fram_samp_aggs|>
+  group_by(Area,type)|>
+    summarize(val=mean(val)) |>
+    filter(!is.na(Area))
+  
+  ggplot(mr_fram_samp_aggs, aes(val,Area, color = type, fill = type)) +
+    geom_col(position = position_dodge(), show.legend = T) +
+    scale_color_manual(values = pal, aesthetics = c("color", "fill")) +
+    theme(legend.position = "top",legend.text = element_text(size=8),
+          legend.key.size = unit(0.4, 'cm'),legend.title=element_blank())+
+    ggtitle("2010-18 Aggregate Fishery Mark Rates from FRAM and Sampling")+
+    xlab("Mark Rate")+
+    ylab("Fishery")
+  
+#all fisheries...
+sort(unique(mr_fram_samp_long$FisheryID)) |>
+map(gg_mr_bar_fishery) |>
+ wrap_plots(ncol = 4)
+# 
+gg_mr_bar_fishery(33) + gg_mr_bar_fishery(37) + gg_mr_bar_fishery(40) + gg_mr_bar_fishery(41)
+
+sort(unique(mr_fram_samp_long$FisheryID))[1:4] |>
+  map(gg_mr_bar_fishery) |>
+  wrap_plots(guides = "collect")
+sort(unique(mr_fram_samp_long$FisheryID))[5:8] |>
+  map(gg_mr_bar_fishery) |>
+  wrap_plots(guides = "collect")
+gg_mr_bar_fishery(93) + gg_mr_bar_fishery(96)
+
+bar6<-gg_mr_bar_fishery(118) + gg_mr_bar_fishery(129)+ 
+  plot_layout(guides='collect') &
+  theme(legend.position='bottom')
+
+ggsave("bar6.png", plot=bar6, height=7, width=10)
+
+#**************************************************
+#plot with time steps
+#gg_mr_bar_fishery <- function(fid) {
+# d <- filter(mr_fram_samp_long, FisheryID == fid)
+
+  mr_fram_samp_long |>   
+    ggplot(aes(RunYear, val, color = type, fill = type)) +
+    geom_col(position = position_dodge(), show.legend = T) +
+    scale_x_continuous("") +
+    scale_y_continuous("Mark rate", labels = scales::percent) +
+    scale_color_manual(values = pal, aesthetics = c("color", "fill")) +
+    facet_wrap(~TimeStep+FisheryID+FisheryName, labeller = label_wrap_gen(multi_line = F), nrow = 1) +
+    #labs(subtitle = d$FisheryName[1]) +
+    theme(legend.position = "top")
+#}
+
+gg_mr_bar_fishery(33) + gg_mr_bar_fishery(37)+ 
+  plot_layout(guides='collect') &
+  theme(legend.position='bottom')
+
+#***********************************************************************
+#plot sampling/FRAM averaging over time steps
+mr_fram_rmis_meants<-mr_fram_rmis_long|>
+  group_by(RunYear,FisheryID,FisheryName,type)|>
+    summarize(val=mean(val))
+
+gg_mr_bar_fishery <- function(fid) {
+  d <- filter(mr_fram_rmis_meants, FisheryID == fid)
+  
+  d |>   
+    ggplot(aes(RunYear, val, color = type, fill = type)) +
+    geom_col(position = position_dodge(), show.legend = T) +
+    scale_x_continuous("") +
+    scale_y_continuous("Mark rate", labels = scales::percent) +
+    scale_color_manual(values = pal, aesthetics = c("color", "fill")) +
+    facet_wrap(~FisheryID+FisheryName, labeller = label_wrap_gen(multi_line = F), nrow = 1) +
+    #labs(subtitle = d$FisheryName[1]) +
+    theme(legend.position = "top")
+}
+
+bar6<-gg_mr_bar_fishery(118) + gg_mr_bar_fishery(129)+ 
+  plot_layout(guides='collect') &
+  theme(legend.position='bottom')
+
+ggsave("bar6.png", plot=bar6, height=7, width=10)
+
+<!-- #**********************************************************************
+```
+
+#### Rates by Fishery and Time Step
+<!-- ```{r}
+<!-- #For a fishery, average TS ERs over years for FRAM and sampling
+<!-- TS_Rates <- mr_ts_fram_samp_rmis[,c(1,2,15,3,7,12)]|>
+<!--   rename("MR_FRAM" = MR)
+<!--   gr
+<!-- ```
+
+
+
+### Compare Sampling to RMIS
+
+Adipose mark rates from sampling programs along the West Coast are reported to RMIS. Mark rates in RMIS are stratified into several time intervals, with weekly and monthly strata being the most common, depending on the sample size and the sample design. RMIS mark rates are computed by dividing the number of adipose marked Coho by the number of total Coho sampled for a given fishery and time stratum. For the mark rate analysis, we used RMIS and sampling data as the mark rate source. As RMIS data is derived from sampling data, verification that these data match became part of the data validation of this project.
+
+Figure x displays 2010-2018 adipose mark rates by fishery in side-by-side bar graphs.
+
+```{r}
+#compare sampling to RMIS
+
+# create annual sums of landed and marked and then calculate mark rate
+# eliminate fishery 33 (Area 1 sport) because Oregon data is not included in ocean sampling report
+  mr_rmis_samp<-filter(mr_rmis_samp, FisheryID !=33)
+mr_rmis_samp_annual<-mr_rmis_samp|>
+  group_by(RunYear,FisheryID,FisheryName)|>
+    summarize_at(c("Total_rmis","Marked_rmis","Total_samp","Marked_samp"), sum)|>
+  mutate(MR_RMIS = Marked_rmis/Total_rmis, MR_samp = Marked_samp/Total_samp)|>
+select(RunYear, FisheryID, FisheryName, MR_samp ,MR_RMIS) |>
+  pivot_longer(names_to = "Source", values_to = "Mark_Rate", cols =  c("MR_samp","MR_RMIS"))
+ 
+ggplot(mr_rmis_samp_annual, aes(RunYear, Mark_Rate, color = Source, fill = Source)) +
+    geom_col(position = position_dodge(), show.legend = T) +
+    scale_x_continuous(breaks = seq(2010, 2018, by = 1)) +
+    scale_y_continuous("Mark Rate", labels = scales::percent) +
+    scale_color_manual(values = pal, aesthetics = c("color", "fill")) +
+    facet_wrap(~FisheryID+FisheryName, labeller = label_wrap_gen(multi_line = F), nrow = 5) +
+    #labs(subtitle = d$FisheryName[1]) +
+    theme(legend.position = "top",legend.text = element_text(size=8),
+          legend.key.size = unit(0.4, 'cm'),
+          legend.title=element_blank(),axis.text=element_text(size=8),
+          strip.text.x = element_text(size = 10))+
+    ggtitle("2010-18 fishery mark rates from RMIS and sampling")+
+    xlab("Year")
+
+
+
+# gg_mr_bar_fishery(33) + gg_mr_bar_fishery(37)+ 
+#   plot_layout(guides='collect') &
+#   theme(legend.position='bottom')
+```
+
+As expected, RMIS and sampling mark rates closely match. Upon examination, the small differences in mark rates were found to be caused by slight differences in time step definitions; i.e., sampling data was summarized on a calendar month basis and RMIS data on a statistical month basis. Since time steps with small sample sizes were excluded from the analysis, this resulted in some time steps exceeding the sample size threshold for one data source and being retained while falling short in the other data source and being eliminated.
+
+## Discussion
+Causes of mark rate differences. Overall findings
+
+## Appendix
+### Treaty/Non-treaty Net Fishery Pairs
+```
+
+
+
+```{r table, echo= FALSE, results='asis'}
+dplyr::tibble(`NT FishID` = c(80,82,87,96,101,109,111,119,121,123,130,132,137,139,141,143,145,153,155,157,159),
+  `T FishID` =c(81,83,88,97,102,110,112,120,122,124,131,133,138,140,142,144,146,154,156,158,160),
+  `Fishery Name` = c("A4B6CNet","Ar6D Net","A6-7ANet","A7BCDNet","Ar 8 Net","Ar8A Net","Ar8D Net","Ar10 Net","Ar10ANet","Ar10ENet","Ar11 Net","Ar11ANet","Ar13 Net","Ar13CNet","Ar13ANet","Ar13DNet","A13FKNet","1212BNet","A9-9ANet","Ar12ANet","A12CDNet")
+       ) |> 
+  # Format as a table
+  gt::gt() |> 
+  # Make column headers bold
+  gt::cols_label(.list = list(`NT FishID` = gt::md("**NT FishID**"), 
+                              `T FishID` = gt::md("**T FishID**"),
+                              `Fishery Name` = gt::md("**Fishery Name**"))) |> 
+  # Add title text
+  gt::tab_header(title = "Treaty/non-treaty net fishery pairs")
+```
+### FRAM Time Steps
+```{r appendi2, echo= FALSE, results='asis'}
+dplyr::tibble(`Time Step` = c(1,2,3,4,5),
+  Duration =c("Jan-June","July","August","September","Oct-Dec"),
+       ) |> 
+  # Format as a table
+  gt::gt() |> 
+  # Make column headers bold
+  gt::cols_label(.list = list(`Time Step` = gt::md("**Time Step**"), 
+                              Duration = gt::md("**Duration**"))) |> 
+  # Add title text
+  gt::tab_header(title = "Coho FRAM time steps")
+```
+### Mark Rates from FRAM and Sampling by Fishery and Time Step
+```{r tableMR, echo= FALSE, results='asis'}
+
+  MR_Table<-mr_fram_samp_rmis[,c(1,2,3:7, 9:12, 14)]|>
+  left_join(d_uniquefishery %>% select(FisheryID,FisheryName), by = c("FisheryID"))
+  
+    MR_Table |> 
+      mutate(TimeStep = factor(TimeStep),
+             RunYear = factor(RunYear),
+             FisheryID = factor(FisheryID),
+             FisheryFlag = factor(FisheryFlag),
+             across(c(5:6, 9:10), ~round(.x)),
+             across(c(7, 11), ~round(.x, 2))) |>
+      rename(`Run Year` = RunYear,
+             `Fish ID` = FisheryID, 
+             `Fish Name` = FisheryName,
+             `Time Step` = TimeStep,
+             `Flag` = FisheryFlag,
+             `FRAM Total` = Total,
+             `FRAM Marked` = Marked,
+             `FRAM Mark Rate` = MR,
+             `FRAM Type` = Type.x,
+             `Sampl total` = Tot_samp,
+             `Sampl Marked` = Marked_samp,
+             `Sampl Mark Rate` = MR_samp,
+             `Sampl Type` = Type.y)|>
+      DT::datatable(filter = 'top', 
+                    extensions = 'Buttons', 
+                    options = list(
+                      dom = 'Bfrtip',
+                      buttons = c('copy', 'csv', 'excel', 'pdf', 'print')))
+    
+```
+
+# Bibliography
+
+Cope, R. (2011). Causes and Effects of Bias in Anticipated Mark Rates in Mark-Selective Fisheries for Coho Salmon. Portland: PFMC.
+
+FRAM Overview citation needed
+
